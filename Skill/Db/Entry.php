@@ -2,6 +2,16 @@
 namespace Skill\Db;
 
 
+use App\Db\MailTemplate;
+use App\Db\Traits\PlacementTrait;
+use Bs\Db\Status;
+use Bs\Db\Traits\TimestampTrait;
+use Bs\Db\Traits\UserTrait;
+use Bs\Db\Traits\StatusTrait;
+use Dom\Template;
+use Tk\Mail\CurlyMessage;
+use Uni\Db\Traits\SubjectTrait;
+
 /**
  * @author Michael Mifsud <info@tropotek.com>
  * @see http://www.tropotek.com/
@@ -9,6 +19,13 @@ namespace Skill\Db;
  */
 class Entry extends \Tk\Db\Map\Model implements \Tk\ValidInterface
 {
+    use StatusTrait;
+    use PlacementTrait;
+    use SubjectTrait;
+    use UserTrait;
+    use TimestampTrait;
+
+
     const STATUS_PENDING = 'pending';
     const STATUS_APPROVED = 'approved';
     const STATUS_NOT_APPROVED = 'not approved';
@@ -94,22 +111,7 @@ class Entry extends \Tk\Db\Map\Model implements \Tk\ValidInterface
     /**
      * @var Collection
      */
-    private $collection = null;
-
-    /**
-     * @var \App\Db\Subject
-     */
-    private $subject = null;
-
-    /**
-     * @var \App\Db\User
-     */
-    private $user = null;
-
-    /**
-     * @var \App\Db\Placement
-     */
-    private $placement = null;
+    private $_collection = null;
 
 
 
@@ -118,8 +120,7 @@ class Entry extends \Tk\Db\Map\Model implements \Tk\ValidInterface
      */
     public function __construct()
     {
-        $this->modified = \Tk\Date::create();
-        $this->created = \Tk\Date::create();
+        $this->_TimestampTrait();
     }
 
 
@@ -134,7 +135,7 @@ class Entry extends \Tk\Db\Map\Model implements \Tk\ValidInterface
     {
         $collection = $this->getCollection();
         if ($collection && !$collection->gradable && !$collection->requirePlacement &&
-            $collection->role == \Skill\Db\Collection::ROLE_STUDENT) {
+            $collection->role == \Skill\Db\Collection::TYPE_STUDENT) {
             return true;
         }
         return false;
@@ -162,11 +163,11 @@ class Entry extends \Tk\Db\Map\Model implements \Tk\ValidInterface
         parent::save();
     }
 
-    public function delete()
-    {
-        \Uni\Db\StatusMap::create()->deleteByModel(get_class($this), $this->getId());
-        return parent::delete();
-    }
+//    public function delete()
+//    {
+//        \Bs\Db\StatusMap::create()->deleteByModel(get_class($this), $this->getId());
+//        return parent::delete();
+//    }
 
 
     /**
@@ -175,73 +176,10 @@ class Entry extends \Tk\Db\Map\Model implements \Tk\ValidInterface
      */
     public function getCollection()
     {
-        if (!$this->collection) {
-            $this->collection = CollectionMap::create()->find($this->collectionId);
+        if (!$this->_collection) {
+            $this->_collection = CollectionMap::create()->find($this->collectionId);
         }
-        return $this->collection;
-    }
-
-    /**
-     * @return \App\Db\Subject|null|\Tk\Db\Map\Model|\Tk\Db\ModelInterface
-     * @throws \Exception
-     */
-    public function getSubject()
-    {
-        if (!$this->subject) {
-            $this->subject = \App\Db\SubjectMap::create()->find($this->subjectId);
-        }
-        return $this->subject;
-    }
-
-    /**
-     * @return \App\Db\User|null|\Tk\Db\Map\Model|\Tk\Db\ModelInterface
-     * @throws \Exception
-     */
-    public function getUser()
-    {
-        if (!$this->user) {
-            $this->user = \App\Db\UserMap::create()->find($this->userId);
-        }
-        return $this->user;
-    }
-
-    /**
-     * @return \App\Db\Placement|null|\Tk\Db\Map\Model|\Tk\Db\ModelInterface
-     * @throws \Exception
-     */
-    public function getPlacement()
-    {
-        if (!$this->placement) {
-            $this->placement = \App\Db\PlacementMap::create()->find($this->placementId);
-        }
-        return $this->placement;
-    }
-
-    /**
-     * @return string
-     */
-    public function getStatus()
-    {
-        return $this->status;
-    }
-
-    /**
-     * @param string $status
-     * @return Entry
-     */
-    public function setStatus(string $status)
-    {
-        $this->status = $status;
-        return $this;
-    }
-
-    /**
-     * return the status list for a select field
-     * @return array
-     */
-    public static function getStatusList()
-    {
-        return \Tk\Form\Field\Select::arrayToSelectList(\Tk\ObjectUtil::getClassConstants(__CLASS__, 'STATUS'));
+        return $this->_collection;
     }
 
     /**
@@ -444,6 +382,174 @@ class Entry extends \Tk\Db\Map\Model implements \Tk\ValidInterface
             $errors['form'] = 'Please answer the confirmation question.';
         }
         return $errors;
+    }
+
+
+
+
+    /**
+     * Must be Called after the status object is saved.
+     * Should return true if the status has changed and the statusChange event should be triggered
+     *
+     * @param Status $status
+     * @return boolean
+     * @throws \Exception
+     */
+    public function hasStatusChanged(Status $status)
+    {
+        $prevStatusName = $status->getPreviousName();
+        switch($status->name) {
+            case Entry::STATUS_PENDING:
+                if (!$prevStatusName)
+                    return true;
+                break;
+            case Entry::STATUS_APPROVED:
+                if (!$prevStatusName || Entry::STATUS_PENDING == $prevStatusName)
+                    return true;
+                break;
+            case Entry::STATUS_NOT_APPROVED:
+                if (Entry::STATUS_PENDING == $prevStatusName)
+                    return true;
+                break;
+        }
+        return false;
+    }
+
+    /**
+     * @param \Bs\Db\Status $status
+     * @param CurlyMessage $message
+     * @return null|\Tk\Mail\CurlyMessage
+     * @throws \Exception
+     */
+    public function formatStatusMessage($status, $message)
+    {
+        $model = $this;
+        $placement = $model->getPlacement();
+        if (!$placement->getPlacementType()->isNotifications()) {
+            \Tk\Log::warning('PlacementType[' . $placement->getPlacementType()->getName() . '] Notifications Disabled');
+            return null;
+        }
+
+        $message->setSubject('[#'.$model->getId().'] ' . $model->getCollection()->getName() . ' Entry ' .
+            ucfirst($status->getName()) . ' for ' . $placement->getTitle(true) . ' ');
+        $message->setFrom(\Tk\Mail\Message::joinEmail(\Uni\Util\Status::getCourse($status)->getEmail(), \Uni\Util\Status::getSubjectName($status)));
+
+        // Setup the message vars
+        \App\Util\StatusMessage::setStudent($message, $placement->getAuthUser());
+        \App\Util\StatusMessage::setSupervisor($message, $placement->getSupervisor());
+        \App\Util\StatusMessage::setCompany($message, $placement->getCompany());
+        \App\Util\StatusMessage::setPlacement($message, $placement);
+
+        // A`dd entry details
+        $message->set('collection::id', $model->getCollection()->getId());
+        $message->set('collection::name', $model->getCollection()->getName());
+        $message->set('collection::instructions', $model->getCollection()->getInstructions());
+        $message->set('entry::id', $model->getId());
+        $message->set('entry::title', $model->getTitle());
+        $message->set('entry::assessor', $model->getAssessor());
+        $message->set('entry::status', $model->getStatus());
+        $message->set('entry::notes', nl2br($model->getNotes(), true));
+
+        /** @var MailTemplate $mailTemplate */
+        $mailTemplate = $message->get('_mailTemplate');
+
+        switch ($mailTemplate->getRecipient()) {
+            case \App\Db\MailTemplate::RECIPIENT_STUDENT:
+                $student = $placement->getUser();
+                if ($student && $student->getEmail()) {
+                    $message->addTo(\Tk\Mail\Message::joinEmail($student->getEmail(), $student->getName()));
+                    $message->set('recipient::email', $student->getEmail());
+                    $message->set('recipient::name', $student->getName());
+                }
+                break;
+            case \App\Db\MailTemplate::RECIPIENT_COMPANY:
+                $company = $placement->getCompany();
+                if ($company && $company->getEmail()) {
+                    $message->addTo(\Tk\Mail\Message::joinEmail($company->getEmail(), $company->getName()));
+                    $message->set('recipient::email', $company->getEmail());
+                    $message->set('recipient::name', $company->getName());
+                }
+                break;
+            case \App\Db\MailTemplate::RECIPIENT_SUPERVISOR:
+                $supervisor = $placement->getSupervisor();
+                if ($supervisor && $supervisor->getEmail())
+                    $message->addTo(\Tk\Mail\Message::joinEmail($supervisor->getEmail(), $supervisor->getName()));
+                $message->set('recipient::email', $supervisor->getEmail());
+                $message->set('recipient::name', $supervisor->getName());
+                break;
+            case \App\Db\MailTemplate::RECIPIENT_STAFF:
+                $subject = \Uni\Util\Status::getSubject($status);
+                $staffList = $subject->getCourse()->getUsers();
+                if (count($staffList)) {
+                    /** @var \App\Db\User $s */
+                    foreach ($staffList as $s) {
+                        $message->addBcc(\Tk\Mail\Message::joinEmail($s->getEmail(), $s->getName()));
+                    }
+                    $message->addTo(\Tk\Mail\Message::joinEmail($subject->getCourse()->getEmail(), \Uni\Util\Status::getSubjectName($status)));
+                    $message->set('recipient::email', $subject->getCourse()->getEmail());
+                    $message->set('recipient::name', \Uni\Util\Status::getSubjectName($status));
+                }
+                break;
+        }
+
+        return $message;
+    }
+
+    /**
+     * @return string|Template
+     */
+    public function getPendingIcon()
+    {
+        $editUrl = \Uni\Uri::createSubjectUrl('/entryEdit.html')->set('entryId', $this->getId());
+        if (!$this->getId()) {
+            $editUrl = \Uni\Uri::createSubjectUrl('/entryEdit.html')->set('collectionId', $this->collectionId)->
+            set('userId', $this->getUserId())->set('placementId', $this->getPlacementId());
+        }
+
+        // TODO: get the icon from the entry collection
+        $collection = $this->getCollection();
+        return sprintf('<a href="%s"><div class="status-icon bg-secondary"><i class="'.$collection->icon.'"></i></div></a>',
+            htmlentities($editUrl));
+    }
+
+    /**
+     * @return string|Template
+     * @throws \Exception
+     */
+    public function getPendingHtml()
+    {
+        $collection = $this->getCollection();
+        $editUrl = \Uni\Uri::createSubjectUrl('/entryEdit.html')->set('entryId', $this->getId());
+        $from = '';
+
+        $userName = $this->getPlacement()->getAuthUser()->getName();
+        if ($this->getPlacement()) {
+            $from = 'from <em>' . htmlentities($this->getPlacement()->getCompany()->getName()) . '</em>';
+        }
+
+        $html = sprintf('<div class="status-placement"><div><em>%s</em> %s submitted a %s Entry for <em>%s</em></div>
+  <div class="status-actions">
+    <a href="%s" class="edit"><i class="fa fa-pencil"></i> Edit</a>
+   <!--  |
+    <a href="#" class="view"><i class="fa fa-eye"></i> View</a> |
+    <a href="#" class="approve"><i class="fa fa-check"></i> Approve</a> |
+    <a href="#" class="reject"><i class="fa fa-times"></i> Reject</a> |
+    <a href="#" class="email"><i class="fa fa-envelope"></i> Email</a>
+    -->
+  </div>
+</div>',
+            htmlentities($this->assessor), $from, htmlentities($collection->getName()), htmlentities($userName), htmlentities($editUrl));
+
+        return $html;
+    }
+
+    /**
+     * @return string
+     * @throws \Exception
+     */
+    public function getLabel()
+    {
+        return $this->getCollection()->getName() . ' ' . \Tk\ObjectUtil::basename($this->getCurrentStatus()->getFkey());
     }
 
 }

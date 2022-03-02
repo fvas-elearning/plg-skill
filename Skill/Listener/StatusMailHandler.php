@@ -12,12 +12,17 @@ class StatusMailHandler implements Subscriber
 {
 
     /**
-     * @param \Uni\Event\StatusEvent $event
+     * @param \Bs\Event\StatusEvent $event
      * @throws \Exception
      */
-    public function onSendAllStatusMessages(\Uni\Event\StatusEvent $event)
+    public function onSendAllStatusMessages(\Bs\Event\StatusEvent $event)
     {
-        if (!$event->getStatus()->isNotify() || !$event->getStatus()->getCourse()->getCourseProfile()->isNotifications()) return;   // do not send messages
+        $course = \Uni\Util\Status::getCourse($event->getStatus());
+        if (!$event->getStatus()->isNotify() || ($course && !$course->getCourseProfile()->isNotifications())) {
+            \Tk\Log::debug('Skill::onSendAllStatusMessages: Status Notification Disabled');
+            return;
+        }
+        $subject = \Uni\Util\Status::getSubject($event->getStatus());
 
         /** @var \Tk\Mail\CurlyMessage $message */
         foreach ($event->getMessageList() as $message) {
@@ -31,7 +36,7 @@ class StatusMailHandler implements Subscriber
                     $filter = array(
                         'active' => true,
                         'subjectId' => $message->get('placement::subjectId'),
-                        'role' => \Skill\Db\Collection::ROLE_COMPANY,
+                        'role' => \Skill\Db\Collection::TYPE_COMPANY,
                         'requirePlacement' => true,
                         'placementTypeId' => $placement->getPlacementTypeId()
                     );
@@ -82,7 +87,7 @@ class StatusMailHandler implements Subscriber
     public static function getSubscribedEvents()
     {
         return array(
-            \Uni\StatusEvents::STATUS_SEND_MESSAGES => array('onSendAllStatusMessages', 10)
+            \Bs\StatusEvents::STATUS_SEND_MESSAGES => array('onSendAllStatusMessages', 10)
         );
     }
     

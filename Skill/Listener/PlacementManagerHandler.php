@@ -45,9 +45,9 @@ class PlacementManagerHandler implements Subscriber
             $config = \Uni\Config::getInstance();
             $this->controller = $controller;
 
-            if (!$config->getAuthUser()->isStudent()) {
-                \Skill\Db\CollectionMap::create()->fixChangeoverEntries();
-            }
+//            if (!$config->getAuthUser()->isStudent()) {
+//                \Skill\Db\CollectionMap::create()->fixChangeoverEntries();
+//            }
         }
     }
 
@@ -71,7 +71,7 @@ class PlacementManagerHandler implements Subscriber
                 $url = \Uni\Uri::createSubjectUrl('/entryEdit.html')->set('collectionId', $collection->getId());
 
                 $actionsCell->append(\Tk\Table\Ui\ActionButton::createBtn($collection->name, $url, $collection->icon))
-                    ->setGroup('skills')->setOnShow(function ($cell, $obj, $btn) use ($collection) {
+                    ->setGroup('skills')->addOnShow(function ($cell, $obj, $btn) use ($collection) {
                         /* @var $obj \App\Db\Placement */
                         /* @var $btn \Tk\Table\Cell\ActionButton */
                         $placementCollection = \Skill\Db\CollectionMap::create()->findFiltered(array('subjectId' => $obj->getSubjectId(),

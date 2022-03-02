@@ -51,8 +51,8 @@ class Entry extends \App\FormIface
             $this->appendField(new Field\Html('average', sprintf('%.2f &nbsp; (%d%%)', $avg, $ratio)))->setFieldset('Entry Details');
         }
 
-        $urlRole = \Uni\Uri::create()->getRoleType($this->getConfig()->getAvailableUserRoleTypes());
-        if ($user && $user->isStaff() && $user->getRole()->hasType($urlRole)) {
+        $urlRole = \Uni\Uri::create()->getRoleType($this->getConfig()->getUserTypeList());
+        if ($user && $user->isStaff() && $user->hasType($urlRole)) {
             $this->appendField(new \App\Form\Field\StatusSelect('status', \Skill\Db\Entry::getStatusList()))
                 ->setRequired()->prependOption('-- Status --', '')->setNotes('Set the status. Use the checkbox to disable notification emails.')->setFieldset('Entry Details');
         } else {
@@ -78,7 +78,7 @@ class Entry extends \App\FormIface
             }
         }
 
-        if ($this->getEntry()->getCollection()->confirm) {
+        if ($this->getEntry()->getCollection()->getConfirm()) {
             $radioBtn = new \Tk\Form\Field\RadioButton('confirm', $this->getEntry()->getCollection()->confirm);
             $radioBtn->appendOption('Yes', '1', 'fa fa-check')->appendOption('No', '0', 'fa fa-ban');
             $this->appendField($radioBtn)->setLabel(null)->setFieldset('Confirmation')->setValue(true);
@@ -123,7 +123,7 @@ CSS;
 
         $js = <<<JS
 jQuery(function ($) {
-  if (config.roleType === 'staff') {
+  if (config.roleType === 'staff' && $('fieldset.skill-group').length > 0) {
     $('.skill-entry-edit .tk-form-events').clone(true).appendTo($('.skill-entry-edit fieldset.EntryDetails'));
   }
 });
@@ -153,24 +153,28 @@ JS;
         \Skill\Db\EntryMap::create()->mapForm($form->getValues(), $this->getEntry());
 
         if (!$this->isPublic()) {
-            if ($form->getField('status') && (!$form->getFieldValue('status') || !in_array($form->getFieldValue('status'),
-                        \Tk\ObjectUtil::getClassConstants($this->getEntry(), 'STATUS')))) {
-                $form->addFieldError('status', 'Please Select a valid status');
-            }
+//            if ($form->getField('status') && (!$form->getFieldValue('status') || !in_array($form->getFieldValue('status'),
+//                        \Tk\ObjectUtil::getClassConstants($this->getEntry(), 'STATUS')))) {
+//                $form->addFieldError('status', 'Please Select a valid status');
+//            }
         } else {
-            $this->getEntry()->status = \Skill\Db\Entry::STATUS_PENDING;
+            $this->getEntry()->setStatus(\Skill\Db\Entry::STATUS_PENDING);
         }
 
         $hasValue = false;
         foreach ($form->getValues('/^item\-/') as $name => $val) {
             if ($val > 0) $hasValue = true;
         }
+        $items = \Skill\Db\ItemMap::create()->findFiltered(array('collectionId' => $this->getEntry()->getCollection()->getId()),
+            \Tk\Db\Tool::create('category_id, order_by'));
+        if (!$items->count()) {
+            $hasValue = true;
+        }
         if (!$hasValue) {
             $form->addError('Use the slider at the end of the question to leave feedback.');
         }
 
         $form->addFieldErrors($this->getEntry()->validate());
-
         if ($form->hasErrors()) {
             return;
         }
@@ -183,15 +187,9 @@ JS;
         }
 
         // TODO: Although this seems redundant, there was a bug where the getEntry()->userId == placement->id (try to trace?)
-        $this->getEntry()->userId = $this->getEntry()->getPlacement()->getUserId();
+        $this->getEntry()->setUserId($this->getEntry()->getPlacement()->getUserId());
+        $this->getEntry()->setStatusNotify(true);
         $this->getEntry()->save();
-
-        // Create status if changed and trigger notifications
-        if (!$this->isPublic() && $form->getField('status')) {
-            \Uni\Db\Status::createFromStatusSelect($this->getEntry(), $form->getField('status'));
-        } else {
-            \Uni\Db\Status::createFromTrait($this->getEntry());
-        }
 
         \Tk\Alert::addSuccess('You response has been successfully submitted. Please return at any time to make changes while this Entry remains in the pending status.');
         $url = \Tk\Uri::create()->set('entryId', $this->getEntry()->getId());
